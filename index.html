@@ -1,0 +1,350 @@
+<!DOCTYPE html>
+<html lang="pt-BR">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>⚡Admin — Pedidos</title>
+<script src="https://cdn.tailwindcss.com"></script>
+<style>
+body { background: #1F2937; color: #FFF; font-family: sans-serif; }
+.toast { position: fixed; top: 1rem; right: 1rem; background: #22C55E; color: white; padding: 0.5rem 1rem; border-radius: 0.5rem; z-index: 100; opacity:0; transition: opacity 0.3s; }
+.toast.show { opacity:1; }
+
+/* Kanban */
+.kanban { display:flex; gap:1rem; flex-wrap:wrap; }
+.kanban-column { background:#111827; flex:1; min-width:250px; border-radius:1rem; padding:0.5rem; }
+.kanban-column h2 { text-align:center; font-weight:bold; margin-bottom:0.5rem; text-transform:uppercase; }
+.order-card { background:#374151; border-radius:1rem; padding:1rem; margin-bottom:1rem; transition: transform 0.2s; cursor:pointer; }
+.order-card:hover { transform: scale(1.02); }
+.order-card.preparando { background:#4B5563; }
+.order-card.saiu-para-entrega { background:#2563EB; }
+.order-card.finalizado { background:#16A34A; }
+.order-card.cancelado { background:#DC2626; }
+
+.status { font-weight:bold; padding:0.25rem 0.5rem; border-radius:0.5rem; text-transform:uppercase; font-size:0.75rem; }
+.status.preparando { background:#FBBF24; color:#000; }
+.status.saiu-para-entrega { background:#3B82F6; color:#fff; }
+.status.finalizado { background:#22C55E; color:#fff; }
+.status.cancelado { background:#EF4444; color:#fff; }
+
+/* detalhes expansíveis */
+.details { display:none; margin-top:0.5rem; }
+.order-card.expanded .details { display:block; }
+.expand-btn { cursor:pointer; font-weight:bold; color:#FFD700; }
+</style>
+</head>
+<body class="p-4">
+
+<h1 class="text-yellow-400 text-3xl font-bold mb-4 text-center">📦 Painel de Pedidos⚡</h1>
+
+<div class="flex justify-center mb-4">
+  <button id="enableSound" class="bg-green-500 text-white px-4 py-2 rounded hover:bg-green-600">Ativar Notificações Sonoras</button>
+</div>
+<button id="finishShift" class="bg-red-600 text-white px-4 py-2 rounded hover:bg-red-700">Finalizar Expediente</button>
+<br><br>
+<div class="flex flex-col md:flex-row gap-4 mb-4">
+  <input id="searchOrders" placeholder="Buscar por nome ou WhatsApp..." class="flex-1 p-3 rounded bg-gray-700 border border-gray-600"/>
+  <select id="filterStatus" class="p-3 rounded bg-gray-700 border border-gray-600">
+    <option value="">Todos os status</option>
+    <option value="preparando">Preparando</option>
+    <option value="saiu-para-entrega">Saiu para entrega</option>
+    <option value="finalizado">Finalizado</option>
+    <option value="cancelado">Cancelado</option>
+  </select>
+  <select id="filterTipo" class="p-3 rounded bg-gray-700 border border-gray-600">
+    <option value="">Todos os tipos</option>
+    <option value="entrega">Entrega</option>
+    <option value="retirada">Retirada</option>
+  </select>
+</div>
+
+<div class="kanban">
+  <div class="kanban-column" id="colPreparando">
+    <h2>Preparando</h2>
+  </div>
+  <div class="kanban-column" id="colSaiu">
+    <h2>Saiu para entrega</h2>
+  </div>
+  <div class="kanban-column" id="colFinalizado">
+    <h2>Finalizado / Cancelado</h2>
+  </div>
+</div>
+
+<div id="toastContainer"></div>
+<audio id="newOrderAudio" src="https://www.dropbox.com/scl/fi/2pcg8bta25fri1eya1edp/delivery-food.mp3?rlkey=bfsotetcywum9ifv9ftgm9mb6&st=a2q1g671&raw=1" preload="auto"></audio>
+<audio id="goodbyeAudio" src="https://www.dropbox.com/scl/fi/aedz8jfxfjfrx66sen0jy/ate-amanha-delivery-food.mp3?rlkey=v54pf16wv752hegrc8zmbezsa&st=zy3uel1q&raw=1" preload="auto"></audio>
+
+<script src="https://cdnjs.cloudflare.com/ajax/libs/jspdf/2.5.1/jspdf.umd.min.js"></script>
+<script type="module">
+import { initializeApp } from "https://www.gstatic.com/firebasejs/10.5.2/firebase-app.js";
+import { getDatabase, ref, onValue, update, remove } from "https://www.gstatic.com/firebasejs/10.5.2/firebase-database.js";
+
+// --- Firebase config ---
+const firebaseConfig = {
+  apiKey: "AIzaSyBzK6HfalJpnGaGFZptwJUfIkpugvevHNs",
+  authDomain: "delivery-demo-54f9c.firebaseapp.com",
+  databaseURL: "https://delivery-demo-54f9c-default-rtdb.firebaseio.com",
+  projectId: "delivery-demo-54f9c",
+  storageBucket: "delivery-demo-54f9c.firebasestorage.app",
+  messagingSenderId: "77029251394",
+  appId: "1:77029251394:web:5a4eca50ff529b96f710db"
+};
+const app = initializeApp(firebaseConfig);
+const db = getDatabase(app);
+
+const $ = (s,r=document)=>r.querySelector(s);
+const $$ = (s,r=document)=>Array.from(r.querySelectorAll(s));
+const brl = v=>Number(v||0).toLocaleString('pt-BR',{style:'currency',currency:'BRL'});
+
+let ORDERS = [];
+let lastOrderIds = new Set();
+let soundEnabled = false;
+
+const searchOrders = $('#searchOrders');
+const filterStatus = $('#filterStatus');
+const filterTipo = $('#filterTipo');
+const newOrderAudio = $('#newOrderAudio');
+const toastContainer = $('#toastContainer');
+
+// --- Funções ---
+$('#enableSound').onclick = () => {
+  soundEnabled = true;
+  showToast('Notificações sonoras ativadas!');
+};
+
+function showToast(msg){
+  const div=document.createElement('div');
+  div.className='toast show';
+  div.textContent=msg;
+  toastContainer.appendChild(div);
+  setTimeout(()=> div.remove(),2500);
+}
+
+// --- Função de impressão PDF estilo cupom ---
+function printOrder(order){
+  const { jsPDF } = window.jspdf;
+  const doc = new jsPDF({unit:'mm', format:[80,200]});
+  let y = 5;
+
+  doc.setFontSize(12);
+  doc.text("Pedido Novo!", 40, y, {align:"center"});
+  y += 7;
+
+  doc.setFontSize(10);
+
+  const writeLine = (text, startY) => {
+    const lines = doc.splitTextToSize(text, 70);
+    lines.forEach(line => { doc.text(line, 5, startY); startY += 5; });
+    return startY;
+  };
+
+  y = writeLine(`Cliente: ${order.name}`, y);
+  y = writeLine(`WhatsApp: ${order.whats}`, y);
+  y = writeLine(`Endereço: ${order.endereco}`, y);
+  y = writeLine(`Tipo: ${order.delivery}`, y);
+  y = writeLine(`Total: R$ ${order.total.toFixed(2)}`, y);
+  y += 3;
+
+  if(order.payment === 'dinheiro'){
+    y = writeLine(`Pagamento: Dinheiro`, y);
+    if(order.troco) y = writeLine(`Troco: ${order.troco}`, y);
+  } else if(order.payment === 'pix'){
+    y = writeLine(`Pagamento: PIX - Pago pelo aplicativo`, y);
+  } else {
+    y = writeLine(`Pagamento: ${order.payment || 'Não informado'}`, y);
+  }
+
+  y += 3;
+  y = writeLine("Itens:", y);
+  order.items.forEach(i => {
+    y = writeLine(`${i.nome} x${i.qtd} = R$ ${(i.preco*i.qtd).toFixed(2)} (${i.status})`, y);
+  });
+
+  y += 5;
+  doc.setLineWidth(0.2);
+  doc.line(5, y, 75, y);
+  y += 5;
+  writeLine("Obrigado pela preferência!", y);
+
+  doc.autoPrint();
+  window.open(doc.output('bloburl'), '_blank');
+}
+
+// --- Botões ---
+function attachButtons() {
+  $$('.order-card button').forEach(btn=>{
+    btn.onclick = async ()=>{
+      const id = btn.dataset.id;
+      const action = btn.dataset.status;
+      const order = ORDERS.find(o=>o.id===id);
+      if(!order) return;
+
+      if(action==='imprimir'){ printOrder(order); return; }
+      if(action==='solicitarPix'){
+        const msg = `Olá ${order.name}, por favor nos envie o comprovante do pagamento via PIX. Obrigado! 🙏`;
+        const waUrl = `https://wa.me/55${order.whats.replace(/\D/g,'')}?text=${encodeURIComponent(msg)}`;
+        window.open(waUrl,'_blank');
+        return;
+      }
+      if(action==='falar'){
+        const itensMsg = order.items.map(i=>`${i.nome} x${i.qtd}`).join(', ');
+        const msg = `Olá ${order.name}! Seu pedido (${itensMsg}) está pronto para retirada. Obrigado!`;
+        const waUrl = `https://wa.me/55${order.whats.replace(/\D/g,'')}?text=${encodeURIComponent(msg)}`;
+        window.open(waUrl,'_blank');
+        return;
+      }
+
+      await update(ref(db,'pedidos/'+id),{status:action});
+      showToast(`Pedido ${order.name} atualizado para ${action}`);
+
+      if(action==='saiu-para-entrega' && order.delivery==='entrega'){
+        const agora = new Date();
+        const entrega = new Date(agora.getTime() + 60*60*1000);
+        const horaEntrega = entrega.toLocaleTimeString('pt-BR',{hour:'2-digit',minute:'2-digit'});
+        const itensMsg = order.items.map(i=>`${i.nome} x${i.qtd}`).join(', ');
+        const msg = `Olá ${order.name}! Seu pedido (${itensMsg}) saiu para entrega e deve chegar por volta das ${horaEntrega}.`;
+        const waUrl = `https://wa.me/55${order.whats.replace(/\D/g,'')}?text=${encodeURIComponent(msg)}`;
+        window.open(waUrl,'_blank');
+      }
+    };
+  });
+}
+
+// --- Render Kanban ---
+function renderOrders(){
+  const term = searchOrders.value.toLowerCase();
+  const statusFilter = filterStatus.value;
+  const tipoFilter = filterTipo.value;
+
+  $('#colPreparando').innerHTML='<h2>Preparando</h2>';
+  $('#colSaiu').innerHTML='<h2>Saiu para entrega</h2>';
+  $('#colFinalizado').innerHTML='<h2>Finalizado / Cancelado</h2>';
+
+  ORDERS.filter(o=>{
+    const termMatch = `${o.name} ${o.whats}`.toLowerCase().includes(term);
+    const statusMatch = statusFilter ? o.status===statusFilter : true;
+    const tipoMatch = tipoFilter ? o.delivery===tipoFilter : true;
+    return termMatch && statusMatch && tipoMatch;
+  }).forEach(o=>{
+    const div = document.createElement('div');
+    div.className = `order-card ${o.status}`;
+
+    const orderNumber = o.whats.replace(/\D/g,'').slice(-4);
+    let buttonsHtml = `
+      ${o.delivery==='entrega' ? `<button class="bg-blue-500 text-white px-3 py-1 rounded btn" data-id="${o.id}" data-status="saiu-para-entrega">Saiu para entrega</button>` : ''}
+      <button class="bg-green-500 text-white px-3 py-1 rounded btn" data-id="${o.id}" data-status="finalizado">Finalizado</button>
+      <button class="bg-red-600 text-white px-3 py-1 rounded btn" data-id="${o.id}" data-status="cancelado">Cancelar</button>
+      ${o.payment==='pix' ? `<button class="bg-yellow-400 text-black px-3 py-1 rounded btn" data-id="${o.id}" data-status="solicitarPix">Solicitar Comprovante de Pagamento</button>` : ''}
+      ${o.delivery==='retirada' ? `<button class="bg-purple-500 text-white px-3 py-1 rounded btn" data-id="${o.id}" data-status="falar">Falar com Cliente</button>` : ''}
+      <button class="bg-gray-400 text-black px-3 py-1 rounded btn" data-id="${o.id}" data-status="imprimir">Imprimir Pedido</button>
+    `;
+
+    const trocoHtml = o.troco ? `<div class="mb-2 font-semibold text-yellow-300">💰 ${o.troco}</div>` : '';
+
+    div.innerHTML = `
+      <div class="flex justify-between items-center mb-2">
+        <div>
+          <span class="font-bold text-lg">#${orderNumber} - ${o.name}</span> (${o.whats}) 
+          <span class="status ${o.status}">${o.status.replace(/-/g,' ')}</span>
+        </div>
+        <span class="expand-btn">Detalhes ▼</span>
+      </div>
+      <div class="details">
+        <div class="mb-2">Tipo: ${o.delivery}</div>
+        <div class="mb-2">Endereço: ${o.endereco}</div>
+        <div class="mb-2">Pagamento: ${o.payment ? o.payment.toUpperCase() : 'Não informado'}</div>
+        <div class="mb-2 font-semibold">Total: ${brl(o.total)}</div>
+        ${trocoHtml}
+        <div class="mb-2">
+          <div class="font-bold mb-1">Itens:</div>
+          <ul>
+            ${o.items.map(i=>`<li>${i.nome} x${i.qtd} = ${brl(i.preco*i.qtd)} (${i.status})</li>`).join('')}
+          </ul>
+        </div>
+        <div class="flex gap-2 mt-2 flex-wrap">
+          ${buttonsHtml}
+        </div>
+      </div>
+    `;
+
+    div.querySelector('.expand-btn').onclick = ()=>{ div.classList.toggle('expanded'); };
+
+    if(o.status==='preparando') $('#colPreparando').appendChild(div);
+    else if(o.status==='saiu-para-entrega') $('#colSaiu').appendChild(div);
+    else $('#colFinalizado').appendChild(div);
+  });
+
+  attachButtons();
+}
+
+// --- Firebase listener ---
+let firstLoad = true; // <-- nova variável
+
+onValue(ref(db,'pedidos'), snap=>{
+  const currentIds = new Set();
+  ORDERS=[];
+  snap.forEach(ch=>{
+    const val = ch.val();
+    const order = {
+      id: ch.key,
+      name: val.cliente || val.name || 'Cliente',
+      whats: val.telefone || val.whats || '000000000',
+      delivery: val.delivery || val.tipo || 'retirada',
+      total: val.total || 0,
+      endereco: val.address || 'Não informado',
+      troco: val.troco || '',
+      payment: val.payment || '',
+      items: val.itens ? Object.keys(val.itens).map(k=>({
+        nome: val.itens[k].nome || k,
+        qtd: val.itens[k].qtd || 1,
+        preco: val.itens[k].preco || 0,
+        status: val.itens[k].status || 'pendente'
+      })) : [],
+      status: (val.status || 'Preparando').toLowerCase().replace(/\s/g,'-')
+    };
+    ORDERS.push(order);
+    currentIds.add(ch.key);
+
+    // 🔔 Toca som só se não for o primeiro carregamento
+    if(!firstLoad && !lastOrderIds.has(ch.key)){
+      if(soundEnabled){
+        newOrderAudio.currentTime = 0;
+        newOrderAudio.play().catch(()=>{});
+      }
+      showToast(`Novo pedido de ${order.name} recebido!`);
+    }
+  });
+  lastOrderIds = currentIds;
+  firstLoad = false; // <-- marca que o primeiro carregamento já ocorreu
+  renderOrders();
+});
+
+
+const goodbyeAudio = $('#goodbyeAudio');
+$('#finishShift').onclick = async () => {
+  const confirmar = confirm('Tem certeza que deseja finalizar o expediente? Todos os pedidos serão apagados!');
+  if(!confirmar) return;
+
+  try {
+    await remove(ref(db, 'pedidos')); 
+    ORDERS = [];
+    renderOrders();
+    showToast('Expediente finalizado: todos os pedidos foram apagados.');
+    goodbyeAudio.currentTime = 0;
+    goodbyeAudio.play().catch(()=>{}); 
+  } catch(err) {
+    console.error(err);
+    showToast('Erro ao finalizar expediente.');
+  }
+};
+
+searchOrders.oninput = renderOrders;
+filterStatus.onchange = renderOrders;
+filterTipo.onchange = renderOrders;
+</script>
+
+
+
+
+</body>
+</html>
