@@ -393,14 +393,14 @@ if(!order.statusHistory || order.statusHistory.length === 0){
 // --- Finalizar expediente ---
 const goodbyeAudio = $('#goodbyeAudio');
 $('#finishShift').onclick = async () => {
-  const confirmar = confirm('Tem certeza que deseja finalizar o expediente? Todos os pedidos serão apagados!');
+  const confirmar = confirm('Tem certeza que deseja finalizar o expediente?');
   if(!confirmar) return;
 
   try {
     await remove(ref(db, 'pedidos')); 
     ORDERS = [];
     renderOrders();
-    showToast('Expediente finalizado: todos os pedidos foram apagados.');
+    showToast('Expediente Finalizado.');
     goodbyeAudio.currentTime = 0;
     goodbyeAudio.play().catch(()=>{}); 
   } catch(err) {
