@@ -78,7 +78,7 @@ body { background: #1F2937; color: #FFF; font-family: sans-serif; }
 <script src="https://cdnjs.cloudflare.com/ajax/libs/jspdf/2.5.1/jspdf.umd.min.js"></script>
 <script type="module">
 import { initializeApp } from "https://www.gstatic.com/firebasejs/10.5.2/firebase-app.js";
-import { getDatabase, ref, onValue, update, remove } from "https://www.gstatic.com/firebasejs/10.5.2/firebase-database.js";
+import { getDatabase, ref, onValue, update, remove, push } from "https://www.gstatic.com/firebasejs/10.5.2/firebase-database.js";
 
 // --- Firebase config ---
 const firebaseConfig = {
@@ -127,8 +127,17 @@ function printOrder(order){
   const doc = new jsPDF({unit:'mm', format:[80,200]});
   let y = 5;
 
+  doc.setFontSize(8);
+  doc.text("----------------------------------------------------------------------------------", 40, y, {align:"center"});
+  y += 7;
   doc.setFontSize(12);
-  doc.text("Pedido Novo!", 40, y, {align:"center"});
+  doc.text("Aplicativo de Demonstração", 40, y, {align:"center"});
+  y += 7;
+  doc.setFontSize(8);
+  doc.text("www.atecseven.com.br", 40, y, {align:"center"});
+  y += 7;
+  doc.setFontSize(8);
+  doc.text("----------------------------------------------------------------------------------", 40, y, {align:"center"});
   y += 7;
 
   doc.setFontSize(10);
@@ -139,11 +148,11 @@ function printOrder(order){
     return startY;
   };
 
-  y = writeLine(`Cliente: ${order.name}`, y);
-  y = writeLine(`WhatsApp: ${order.whats}`, y);
-  y = writeLine(`Endereço: ${order.endereco}`, y);
-  y = writeLine(`Tipo: ${order.delivery}`, y);
-  y = writeLine(`Total: R$ ${order.total.toFixed(2)}`, y);
+  y = writeLine(`-Cliente: ${order.name}`, y);
+  y = writeLine(`-WhatsApp: ${order.whats}`, y);
+  y = writeLine(`-Endereço: ${order.endereco}`, y);
+  y = writeLine(`-Tipo: ${order.delivery}`, y);
+  y = writeLine(`-Total: R$ ${order.total.toFixed(2)}`, y);
   y += 3;
 
   if(order.payment === 'dinheiro'){
@@ -156,6 +165,16 @@ function printOrder(order){
   }
 
   y += 3;
+
+  // 🔥 imprime histórico completo dos status
+  if(order.statusHistory && order.statusHistory.length){
+    y = writeLine("Histórico de Status:", y);
+    order.statusHistory.forEach(h=>{
+      y = writeLine(`- ${h.status.replace(/-/g,' ')} em ${new Date(h.time).toLocaleString('pt-BR')}`, y);
+    });
+    y += 3;
+  }
+
   y = writeLine("Itens:", y);
   order.items.forEach(i => {
     y = writeLine(`${i.nome} x${i.qtd} = R$ ${(i.preco*i.qtd).toFixed(2)} (${i.status})`, y);
@@ -167,10 +186,16 @@ function printOrder(order){
   }
 
   y += 5;
-  doc.setLineWidth(0.2);
-  doc.line(5, y, 75, y);
-  y += 5;
-  writeLine("Obrigado pela preferência!", y);
+doc.setLineWidth(0.2);
+doc.line(5, y, 75, y); // linha horizontal
+y += 5;
+
+const text = "Obrigado pela preferência e Volte Sempre!";
+const pageWidth = doc.internal.pageSize.getWidth();
+const textWidth = doc.getTextWidth(text);
+const x = (pageWidth - textWidth) / 2;
+doc.text(text, x, y);
+
 
   doc.autoPrint();
   window.open(doc.output('bloburl'), '_blank');
@@ -203,7 +228,17 @@ function attachButtons() {
         return;
       }
 
-      await update(ref(db,'pedidos/'+id),{status:action});
+      // 🔥 adiciona histórico de status no Firebase
+      const newTime = new Date().toISOString();
+      const newHistory = order.statusHistory ? [...order.statusHistory] : [];
+      newHistory.push({status: action, time: newTime});
+
+      await update(ref(db,'pedidos/'+id),{
+        status: action,
+        statusTime: newTime,
+        statusHistory: newHistory
+      });
+
       showToast(`Pedido ${order.name} atualizado para ${action}`);
 
       if(action==='saiu-para-entrega' && order.delivery==='entrega'){
@@ -248,34 +283,48 @@ function renderOrders(){
       <button class="bg-gray-400 text-black px-3 py-1 rounded btn" data-id="${o.id}" data-status="imprimir">Imprimir Pedido</button>
     `;
 
+    // 🔥 histórico no card
+    let historyHtml = '';
+    if(o.statusHistory && o.statusHistory.length){
+      historyHtml = `
+        <div class="mt-2 text-xs text-gray-300">
+          Histórico:
+          <ul>
+            ${o.statusHistory.map(h=>`<li>📅 ${new Date(h.time).toLocaleString('pt-BR')} - ${h.status.replace(/-/g,' ')}</li>`).join('')}
+          </ul>
+        </div>
+      `;
+    }
+
     const trocoHtml = o.troco ? `<div class="mb-2 font-semibold text-yellow-300">💰 ${o.troco}</div>` : '';
 
-     div.innerHTML = `
-    <div class="flex justify-between items-center mb-2">
-      <div>
-        <span class="font-bold text-lg">#${orderNumber} - ${o.name}</span> (${o.whats}) 
-        <span class="status ${o.status}">${o.status.replace(/-/g,' ')}</span>
+    div.innerHTML = `
+      <div class="flex justify-between items-center mb-2">
+        <div>
+          <span class="font-bold text-lg">#${orderNumber} - ${o.name}</span> (${o.whats}) 
+          <span class="status ${o.status}">${o.status.replace(/-/g,' ')}</span>
+        </div>
+        <span class="expand-btn">Detalhes ▼</span>
       </div>
-      <span class="expand-btn">Detalhes ▼</span>
-    </div>
-    <div class="details">
-      <div class="mb-2">Tipo: ${o.delivery}</div>
-      <div class="mb-2">Endereço: ${o.endereco}</div>
-      <div class="mb-2">Pagamento: ${o.payment ? o.payment.toUpperCase() : 'Não informado'}</div>
-      <div class="mb-2 font-semibold">Total: ${brl(o.total)}</div>
-      ${trocoHtml}
-      <div class="mb-2">
-        <div class="font-bold mb-1">Itens:</div>
-        <ul>
-          ${o.items.map(i=>`<li>${i.nome} x${i.qtd} = ${brl(i.preco*i.qtd)} (${i.status})</li>`).join('')}
-        </ul>
+      <div class="details">
+        <div class="mb-2">Tipo: ${o.delivery}</div>
+        <div class="mb-2">Endereço: ${o.endereco}</div>
+        <div class="mb-2">Pagamento: ${o.payment ? o.payment.toUpperCase() : 'Não informado'}</div>
+        <div class="mb-2 font-semibold">Total: ${brl(o.total)}</div>
+        ${trocoHtml}
+        <div class="mb-2">
+          <div class="font-bold mb-1">Itens:</div>
+          <ul>
+            ${o.items.map(i=>`<li>${i.nome} x${i.qtd} = ${brl(i.preco*i.qtd)} (${i.status})</li>`).join('')}
+          </ul>
+        </div>
+        ${o.observacao ? `<div class="mb-2 text-yellow-300">📝 Observação: ${o.observacao}</div>` : ''}
+        ${historyHtml}
+        <div class="flex gap-2 mt-2 flex-wrap">
+          ${buttonsHtml}
+        </div>
       </div>
-      ${o.observacao ? `<div class="mb-2 text-yellow-300">📝 Observação: ${o.observacao}</div>` : ''}
-      <div class="flex gap-2 mt-2 flex-wrap">
-        ${buttonsHtml}
-      </div>
-    </div>
-  `;
+    `;
 
     div.querySelector('.expand-btn').onclick = ()=>{ div.classList.toggle('expanded'); };
 
@@ -288,7 +337,7 @@ function renderOrders(){
 }
 
 // --- Firebase listener ---
-let firstLoad = true; // <-- nova variável
+let firstLoad = true;
 
 onValue(ref(db,'pedidos'), snap=>{
   const currentIds = new Set();
@@ -311,12 +360,23 @@ onValue(ref(db,'pedidos'), snap=>{
         preco: val.itens[k].preco || 0,
         status: val.itens[k].status || 'pendente'
       })) : [],
-      status: (val.status || 'Preparando').toLowerCase().replace(/\s/g,'-')
+      status: (val.status || 'Preparando').toLowerCase().replace(/\s/g,'-'),
+      statusTime: val.statusTime || null,
+      statusHistory: val.statusHistory || [] // 🔥 pega histórico salvo no Firebase
     };
     ORDERS.push(order);
     currentIds.add(ch.key);
 
-    // 🔔 Toca som só se não for o primeiro carregamento
+    // 🔥 garante que o primeiro status "preparando" tenha data/hora
+if(!order.statusHistory || order.statusHistory.length === 0){
+  const now = new Date().toISOString();
+  order.statusHistory = [{status: 'preparando', time: now}];
+  
+  // salva de volta no Firebase para manter histórico
+  update(ref(db, 'pedidos/'+order.id), { statusHistory: order.statusHistory });
+}
+
+
     if(!firstLoad && !lastOrderIds.has(ch.key)){
       if(soundEnabled){
         newOrderAudio.currentTime = 0;
@@ -326,55 +386,11 @@ onValue(ref(db,'pedidos'), snap=>{
     }
   });
   lastOrderIds = currentIds;
-  firstLoad = false; // <-- marca que o primeiro carregamento já ocorreu
+  firstLoad = false;
   renderOrders();
 });
 
-function monitorStatus(order) {
-  if(!order || !order.firebaseKey) return;
-  const orderRef = ref(db, 'pedidos/' + order.firebaseKey);
-
-  onValue(orderRef, snap => {
-    const data = snap.val();
-    if(!data) return;
-
-    const status = data.status;
-    const deliveryType = data.delivery; // 'entrega' ou 'retirada'
-
-    const timelineEl = $('#orderTimeline');
-    const stepPreparando = $('#stepPreparando');
-    const stepEntregaRetirada = $('#stepEntregaRetirada');
-    const stepFinalizado = $('#stepFinalizado');
-    const progressBar = $('#progressBar');
-
-    // Mostrar timeline
-    timelineEl.classList.remove('hidden');
-
-    if(deliveryType === 'entrega') {
-      stepEntregaRetirada.textContent = 'Saiu para entrega';
-      if(status === 'Preparando') {
-        progressBar.style.width = '33%';
-      } else if(status === 'Saiu para entrega') {
-        progressBar.style.width = '66%';
-        audioEntrega.play();
-      } else if(status === 'Finalizado') {
-        progressBar.style.width = '100%';
-        timelineEl.classList.add('hidden');
-      }
-    } else { // retirada
-      stepEntregaRetirada.textContent = 'Aguardando Retirada';
-      if(status === 'Preparando') {
-        progressBar.style.width = '50%';
-      } else if(status === 'Finalizado') {
-        progressBar.style.width = '100%';
-        audioRetirada.play();
-        timelineEl.classList.add('hidden');
-      }
-    }
-  });
-}
-
-
+// --- Finalizar expediente ---
 const goodbyeAudio = $('#goodbyeAudio');
 $('#finishShift').onclick = async () => {
   const confirmar = confirm('Tem certeza que deseja finalizar o expediente? Todos os pedidos serão apagados!');
@@ -397,7 +413,6 @@ searchOrders.oninput = renderOrders;
 filterStatus.onchange = renderOrders;
 filterTipo.onchange = renderOrders;
 </script>
-
 
 
 
