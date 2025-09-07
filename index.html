@@ -71,6 +71,7 @@ body { background: #1F2937; color: #FFF; font-family: sans-serif; }
 </div>
 
 <div id="toastContainer"></div>
+
 <audio id="newOrderAudio" src="https://www.dropbox.com/scl/fi/2pcg8bta25fri1eya1edp/delivery-food.mp3?rlkey=bfsotetcywum9ifv9ftgm9mb6&st=a2q1g671&raw=1" preload="auto"></audio>
 <audio id="goodbyeAudio" src="https://www.dropbox.com/scl/fi/aedz8jfxfjfrx66sen0jy/ate-amanha-delivery-food.mp3?rlkey=v54pf16wv752hegrc8zmbezsa&st=zy3uel1q&raw=1" preload="auto"></audio>
 
@@ -160,6 +161,11 @@ function printOrder(order){
     y = writeLine(`${i.nome} x${i.qtd} = R$ ${(i.preco*i.qtd).toFixed(2)} (${i.status})`, y);
   });
 
+  if(order.observacao){
+    y += 5;
+    y = writeLine(`Observação: ${order.observacao}`, y);
+  }
+
   y += 5;
   doc.setLineWidth(0.2);
   doc.line(5, y, 75, y);
@@ -169,6 +175,9 @@ function printOrder(order){
   doc.autoPrint();
   window.open(doc.output('bloburl'), '_blank');
 }
+
+const audioEntrega = new Audio('https://dl.dropbox.com/scl/fi/8ht99jq95fvg8meyvf6ud/SAIU-PARA-ENTREGA-FOOD.mp3?dl=1');
+const audioRetirada = new Audio('https://dl.dropbox.com/scl/fi/0v5wnfiymzspq495dzwzh/SEU-PEDIDO-ESTA-PRONTO.mp3?dl=1');
 
 // --- Botões ---
 function attachButtons() {
@@ -241,31 +250,32 @@ function renderOrders(){
 
     const trocoHtml = o.troco ? `<div class="mb-2 font-semibold text-yellow-300">💰 ${o.troco}</div>` : '';
 
-    div.innerHTML = `
-      <div class="flex justify-between items-center mb-2">
-        <div>
-          <span class="font-bold text-lg">#${orderNumber} - ${o.name}</span> (${o.whats}) 
-          <span class="status ${o.status}">${o.status.replace(/-/g,' ')}</span>
-        </div>
-        <span class="expand-btn">Detalhes ▼</span>
+     div.innerHTML = `
+    <div class="flex justify-between items-center mb-2">
+      <div>
+        <span class="font-bold text-lg">#${orderNumber} - ${o.name}</span> (${o.whats}) 
+        <span class="status ${o.status}">${o.status.replace(/-/g,' ')}</span>
       </div>
-      <div class="details">
-        <div class="mb-2">Tipo: ${o.delivery}</div>
-        <div class="mb-2">Endereço: ${o.endereco}</div>
-        <div class="mb-2">Pagamento: ${o.payment ? o.payment.toUpperCase() : 'Não informado'}</div>
-        <div class="mb-2 font-semibold">Total: ${brl(o.total)}</div>
-        ${trocoHtml}
-        <div class="mb-2">
-          <div class="font-bold mb-1">Itens:</div>
-          <ul>
-            ${o.items.map(i=>`<li>${i.nome} x${i.qtd} = ${brl(i.preco*i.qtd)} (${i.status})</li>`).join('')}
-          </ul>
-        </div>
-        <div class="flex gap-2 mt-2 flex-wrap">
-          ${buttonsHtml}
-        </div>
+      <span class="expand-btn">Detalhes ▼</span>
+    </div>
+    <div class="details">
+      <div class="mb-2">Tipo: ${o.delivery}</div>
+      <div class="mb-2">Endereço: ${o.endereco}</div>
+      <div class="mb-2">Pagamento: ${o.payment ? o.payment.toUpperCase() : 'Não informado'}</div>
+      <div class="mb-2 font-semibold">Total: ${brl(o.total)}</div>
+      ${trocoHtml}
+      <div class="mb-2">
+        <div class="font-bold mb-1">Itens:</div>
+        <ul>
+          ${o.items.map(i=>`<li>${i.nome} x${i.qtd} = ${brl(i.preco*i.qtd)} (${i.status})</li>`).join('')}
+        </ul>
       </div>
-    `;
+      ${o.observacao ? `<div class="mb-2 text-yellow-300">📝 Observação: ${o.observacao}</div>` : ''}
+      <div class="flex gap-2 mt-2 flex-wrap">
+        ${buttonsHtml}
+      </div>
+    </div>
+  `;
 
     div.querySelector('.expand-btn').onclick = ()=>{ div.classList.toggle('expanded'); };
 
@@ -294,6 +304,7 @@ onValue(ref(db,'pedidos'), snap=>{
       endereco: val.address || 'Não informado',
       troco: val.troco || '',
       payment: val.payment || '',
+      observacao: val.observacao || '',
       items: val.itens ? Object.keys(val.itens).map(k=>({
         nome: val.itens[k].nome || k,
         qtd: val.itens[k].qtd || 1,
@@ -318,6 +329,50 @@ onValue(ref(db,'pedidos'), snap=>{
   firstLoad = false; // <-- marca que o primeiro carregamento já ocorreu
   renderOrders();
 });
+
+function monitorStatus(order) {
+  if(!order || !order.firebaseKey) return;
+  const orderRef = ref(db, 'pedidos/' + order.firebaseKey);
+
+  onValue(orderRef, snap => {
+    const data = snap.val();
+    if(!data) return;
+
+    const status = data.status;
+    const deliveryType = data.delivery; // 'entrega' ou 'retirada'
+
+    const timelineEl = $('#orderTimeline');
+    const stepPreparando = $('#stepPreparando');
+    const stepEntregaRetirada = $('#stepEntregaRetirada');
+    const stepFinalizado = $('#stepFinalizado');
+    const progressBar = $('#progressBar');
+
+    // Mostrar timeline
+    timelineEl.classList.remove('hidden');
+
+    if(deliveryType === 'entrega') {
+      stepEntregaRetirada.textContent = 'Saiu para entrega';
+      if(status === 'Preparando') {
+        progressBar.style.width = '33%';
+      } else if(status === 'Saiu para entrega') {
+        progressBar.style.width = '66%';
+        audioEntrega.play();
+      } else if(status === 'Finalizado') {
+        progressBar.style.width = '100%';
+        timelineEl.classList.add('hidden');
+      }
+    } else { // retirada
+      stepEntregaRetirada.textContent = 'Aguardando Retirada';
+      if(status === 'Preparando') {
+        progressBar.style.width = '50%';
+      } else if(status === 'Finalizado') {
+        progressBar.style.width = '100%';
+        audioRetirada.play();
+        timelineEl.classList.add('hidden');
+      }
+    }
+  });
+}
 
 
 const goodbyeAudio = $('#goodbyeAudio');
